@@ -1,0 +1,108 @@
+# -----------------------------------------------------------------------------
+# Python bytecode and caches
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+downloads/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Test / coverage / type-checker outputs
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# -----------------------------------------------------------------------------
+# Virtual environments
+# -----------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Project-specific virtualenv
+grf_venv39/
+
+# -----------------------------------------------------------------------------
+# IDE / editor files
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.iml
+
+# Vim / Emacs / swap files
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# OS files
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# -----------------------------------------------------------------------------
+# Logs and runtime files
+# -----------------------------------------------------------------------------
+*.log
+logs/
+*.pid
+*.seed
+*.stackdump
+
+# -----------------------------------------------------------------------------
+# ML experiment artifacts
+# -----------------------------------------------------------------------------
+# Weights & Biases
+wandb/
+
+# Model checkpoints / trained weights
+models/
+
+# Generated videos
+videos/
+eval_videos/
+
+# TensorBoard / tracking
+runs/
+
+# -----------------------------------------------------------------------------
+# Google Research Football dumps
+# -----------------------------------------------------------------------------
+# If GRF writes traces, dumps, or temporary match data
+**/*dump*/
+**/replay*/
+
+# -----------------------------------------------------------------------------
+# Environment / secrets
+# -----------------------------------------------------------------------------
+.env
+.env.*
+*.local
+
+# -----------------------------------------------------------------------------
+# Optional: keep old sources out of main history if desired
+# Uncomment if you do not want to version old code snapshots
+# srcEski/
+srcEski/
+apiKey.txt
