@@ -36,6 +36,17 @@ class MPEWrapper(MultiAgentEnvironment):
         self.state_dim = self.obs_dim * self.n_agents
         self.action_dim = int(self.env.action_space(self.agents[0]).shape[0])
 
+        # Continuous MPE actions are typically Box([0,1]); actor outputs are
+        # in [-1,1], so we map them into the env range before stepping.
+        self._action_low = {
+            agent: self.env.action_space(agent).low.astype(np.float32)
+            for agent in self.agents
+        }
+        self._action_high = {
+            agent: self.env.action_space(agent).high.astype(np.float32)
+            for agent in self.agents
+        }
+
     def _build_env(self):
         if self.scenario == "simple_spread":
             from pettingzoo.mpe import simple_spread_v3
@@ -82,10 +93,15 @@ class MPEWrapper(MultiAgentEnvironment):
             dones: [n_agents] (bool)
         """
         action_tensor = action_tensor.detach().to("cpu")
-        action_dict = {
-            agent: action_tensor[i].numpy()
-            for i, agent in enumerate(self.agents)
-        }
+        action_dict = {}
+        for i, agent in enumerate(self.agents):
+            raw_action = action_tensor[i].numpy()
+            low = self._action_low[agent]
+            high = self._action_high[agent]
+
+            # Affine map from [-1,1] to [low, high], then clip for safety.
+            scaled = 0.5 * (raw_action + 1.0) * (high - low) + low
+            action_dict[agent] = np.clip(scaled, low, high)
 
         obs_d, rew_d, term_d, trunc_d, _ = self.env.step(action_dict)
 
