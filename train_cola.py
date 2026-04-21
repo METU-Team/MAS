@@ -271,8 +271,28 @@ def main() -> None:
     }
     torch.save(checkpoint, save_path)
 
+    summary = {
+        "train_result": train_result,
+        "eval_metrics": eval_metrics,
+        "model_path": save_path,
+        "device": device,
+    }
+
+    stem = os.path.splitext(save_path)[0]
+
+    # Full summary mirrors the final console JSON and includes all periodic logs.
+    full_summary_path = stem + "_full_summary.json"
+    with open(full_summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    # JSONL log file is convenient for large runs and streaming tools.
+    logs_path = stem + "_logs.jsonl"
+    with open(logs_path, "w", encoding="utf-8") as f:
+        for record in train_result.get("logs", []):
+            f.write(json.dumps(record) + "\n")
+
     # Sidecar metadata helps watcher/video pipelines discover fresh checkpoints.
-    metadata_path = os.path.splitext(save_path)[0] + ".json"
+    metadata_path = stem + ".json"
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -289,18 +309,17 @@ def main() -> None:
                     "final_noise_std": train_result["final_noise_std"],
                 },
                 "eval_metrics": eval_metrics,
+                "full_summary_path": full_summary_path,
+                "logs_path": logs_path,
             },
             f,
             indent=2,
         )
 
-    summary = {
-        "train_result": train_result,
-        "eval_metrics": eval_metrics,
-        "model_path": save_path,
-        "metadata_path": metadata_path,
-        "device": device,
-    }
+    summary["metadata_path"] = metadata_path
+    summary["full_summary_path"] = full_summary_path
+    summary["logs_path"] = logs_path
+
     print("Training completed.")
     print(json.dumps(summary, indent=2))
 
