@@ -41,6 +41,7 @@ class COLATrainingLoop(TrainingLoopModule):
         updater,
         config: COLATrainingConfig,
         on_log: Optional[Callable[[Dict[str, object]], None]] = None,
+        metrics_logger=None,
     ) -> None:
         self.env = env
         self.replay_buffer = replay_buffer
@@ -50,6 +51,7 @@ class COLATrainingLoop(TrainingLoopModule):
         self.updater = updater
         self.config = config
         self.on_log = on_log
+        self.metrics_logger = metrics_logger
 
         if len(self.actors) != self.env.n_agents:
             raise ValueError("Number of actors must match env.n_agents.")
@@ -130,10 +132,21 @@ class COLATrainingLoop(TrainingLoopModule):
                 logs.append(record)
                 if self.on_log is not None:
                     self.on_log(record)
+                if self.metrics_logger is not None:
+                    self.metrics_logger.log_metrics(record, step=step)
 
-        return {
+        result = {
             "total_steps": step,
             "train_steps": train_steps,
             "final_noise_std": float(noise_std),
             "logs": logs,
         }
+        if self.metrics_logger is not None:
+            self.metrics_logger.finish(
+                {
+                    "total_steps": step,
+                    "train_steps": train_steps,
+                    "final_noise_std": float(noise_std),
+                }
+            )
+        return result

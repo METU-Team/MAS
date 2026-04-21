@@ -13,6 +13,8 @@ from cola_framework.policies.actor import Actor
 from cola_framework.critics.centralized_critic import Critic
 from cola_framework.trainers.maddpg_updater import MADDPGUpdater
 from cola_framework.loops.cola_training_loop import COLATrainingConfig, COLATrainingLoop
+from cola_framework.evaluation.policy_evaluator import PolicyEvaluator
+from cola_framework.monitoring.wandb_logger import WandbLogger
 
 __all__ = [
 	"MPEWrapper",
@@ -25,4 +27,6 @@ __all__ = [
 	"MADDPGUpdater",
 	"COLATrainingConfig",
 	"COLATrainingLoop",
+	"PolicyEvaluator",
+	"WandbLogger",
 ]

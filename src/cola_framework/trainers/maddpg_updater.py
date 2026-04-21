@@ -73,6 +73,11 @@ class MADDPGUpdater(UpdateModule):
         self.opt_cb.step()
         self.consensus_builder.ema_update_teacher()
 
+        # Fraction of batch timesteps where all agents picked the same class.
+        consensus_agreement = (
+            (consensus == consensus[:, :1]).all(dim=1).float().mean().item()
+        )
+
         # 2) Build detached consensus embeddings for RL updates.
         emb_c = self.embedding_layer(consensus).detach()
         with torch.no_grad():
@@ -152,6 +157,7 @@ class MADDPGUpdater(UpdateModule):
 
         return {
             "loss_cb": float(loss_cb.item()),
+            "consensus_agreement": float(consensus_agreement),
             "critic_losses": critic_losses,
             "actor_losses": actor_losses,
         }
