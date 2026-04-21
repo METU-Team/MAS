@@ -6,6 +6,7 @@ from cola_framework.interfaces.embedding import ConsensusEmbeddingModule
 from cola_framework.interfaces.environment import MultiAgentEnvironment
 from cola_framework.interfaces.policy import PolicyModule
 from cola_framework.interfaces.replay_buffer import ExperienceReplay
+from cola_framework.interfaces.training_loop import TrainingLoopModule
 from cola_framework.interfaces.updater import UpdateModule
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
 	"MultiAgentEnvironment",
 	"PolicyModule",
 	"ExperienceReplay",
+	"TrainingLoopModule",
 	"UpdateModule",
 ]
