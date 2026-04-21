@@ -15,6 +15,7 @@ from cola_framework.trainers.maddpg_updater import MADDPGUpdater
 from cola_framework.loops.cola_training_loop import COLATrainingConfig, COLATrainingLoop
 from cola_framework.evaluation.policy_evaluator import PolicyEvaluator
 from cola_framework.monitoring.wandb_logger import WandbLogger
+from cola_framework.watchers.policy_watcher import PolicyWatcher, find_latest_checkpoint
 
 __all__ = [
 	"MPEWrapper",
@@ -29,4 +30,6 @@ __all__ = [
 	"COLATrainingLoop",
 	"PolicyEvaluator",
 	"WandbLogger",
+	"PolicyWatcher",
+	"find_latest_checkpoint",
 ]

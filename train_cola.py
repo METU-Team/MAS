@@ -10,6 +10,7 @@ import copy
 import json
 import os
 import sys
+from datetime import datetime
 from typing import Optional
 
 import torch
@@ -104,6 +105,21 @@ def _maybe_create_wandb_logger(args, config_payload: dict) -> Optional[WandbLogg
         mode=args.wandb_mode,
         api_key_path=key_path,
     )
+
+
+def _build_timestamped_save_path(base_save_path: str, scenario: str) -> str:
+    """Return a unique checkpoint path per training run.
+
+    Filename example:
+      final_cola_model_simple_spread_20260421_143215.pth
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = os.path.basename(base_save_path)
+    stem, ext = os.path.splitext(base_name)
+    if not ext:
+        ext = ".pth"
+    unique_name = "{}_{}_{}{}".format(stem, scenario, timestamp, ext)
+    return os.path.join(os.path.dirname(base_save_path), unique_name)
 
 
 def main() -> None:
@@ -239,6 +255,7 @@ def main() -> None:
     save_path = args.save_model_path
     if not os.path.isabs(save_path):
         save_path = os.path.join(REPO_ROOT, save_path)
+    save_path = _build_timestamped_save_path(save_path, args.scenario)
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
     checkpoint = {
@@ -254,10 +271,34 @@ def main() -> None:
     }
     torch.save(checkpoint, save_path)
 
+    # Sidecar metadata helps watcher/video pipelines discover fresh checkpoints.
+    metadata_path = os.path.splitext(save_path)[0] + ".json"
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "checkpoint_path": save_path,
+                "scenario": args.scenario,
+                "n_agents": env.n_agents,
+                "obs_dim": env.obs_dim,
+                "action_dim": env.action_dim,
+                "state_dim": env.state_dim,
+                "device": device,
+                "train_result": {
+                    "total_steps": train_result["total_steps"],
+                    "train_steps": train_result["train_steps"],
+                    "final_noise_std": train_result["final_noise_std"],
+                },
+                "eval_metrics": eval_metrics,
+            },
+            f,
+            indent=2,
+        )
+
     summary = {
         "train_result": train_result,
         "eval_metrics": eval_metrics,
         "model_path": save_path,
+        "metadata_path": metadata_path,
         "device": device,
     }
     print("Training completed.")

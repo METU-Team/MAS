@@ -1,6 +1,6 @@
 """PettingZoo MPE wrapper that matches the COLA environment interface."""
 
-from typing import Callable, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -22,11 +22,13 @@ class MPEWrapper(MultiAgentEnvironment):
         n_agents: int = 3,
         max_cycles: int = 100,
         device: str = "cpu",
+        render_mode: Optional[str] = None,
     ) -> None:
         self.scenario = scenario
         self.n_agents = n_agents
         self.max_cycles = max_cycles
         self.device = device
+        self.render_mode = render_mode
 
         self.env = self._build_env()
         self.agents = list(self.env.possible_agents)
@@ -55,6 +57,7 @@ class MPEWrapper(MultiAgentEnvironment):
                 N=self.n_agents,
                 max_cycles=self.max_cycles,
                 continuous_actions=True,
+                render_mode=self.render_mode,
             )
 
         if self.scenario == "simple_tag":
@@ -68,6 +71,7 @@ class MPEWrapper(MultiAgentEnvironment):
                 num_obstacles=2,
                 max_cycles=self.max_cycles,
                 continuous_actions=True,
+                render_mode=self.render_mode,
             )
 
         raise ValueError(
@@ -131,3 +135,15 @@ class MPEWrapper(MultiAgentEnvironment):
             else:
                 ordered.append(np.zeros(self.obs_dim, dtype=np.float32))
         return torch.tensor(np.stack(ordered, axis=0), dtype=torch.float32)
+
+    def render_frame(self) -> Optional[np.ndarray]:
+        """Return one RGB frame when render_mode is set to rgb_array."""
+        if self.render_mode != "rgb_array":
+            return None
+        frame = self.env.render()
+        if frame is None:
+            return None
+        return np.asarray(frame, dtype=np.uint8)
+
+    def close(self) -> None:
+        self.env.close()
