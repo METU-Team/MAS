@@ -11,6 +11,7 @@ from cola_framework.consensus.builder import ConsensusBuilder
 from cola_framework.embedding.consensus_embedding import ConsensusEmbedding
 from cola_framework.policies.actor import Actor
 from cola_framework.critics.centralized_critic import Critic
+from cola_framework.trainers.maddpg_updater import MADDPGUpdater
 
 __all__ = [
 	"MPEWrapper",
@@ -20,4 +21,5 @@ __all__ = [
 	"ConsensusEmbedding",
 	"Actor",
 	"Critic",
+	"MADDPGUpdater",
 ]
