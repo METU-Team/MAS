@@ -16,6 +16,10 @@ from cola_framework.loops.cola_training_loop import COLATrainingConfig, COLATrai
 from cola_framework.evaluation.policy_evaluator import PolicyEvaluator
 from cola_framework.monitoring.wandb_logger import WandbLogger
 from cola_framework.watchers.policy_watcher import PolicyWatcher, find_latest_checkpoint
+from cola_framework.encoders.identity_encoder import IdentityHistoryEncoder
+from cola_framework.encoders.gru_encoder import GRUHistoryEncoder
+from cola_framework.encoders.window_encoder import WindowConcatEncoder
+from cola_framework.encoders.transformer_encoder import TransformerHistoryEncoder
 
 __all__ = [
 	"MPEWrapper",
@@ -32,4 +36,8 @@ __all__ = [
 	"WandbLogger",
 	"PolicyWatcher",
 	"find_latest_checkpoint",
+	"IdentityHistoryEncoder",
+	"GRUHistoryEncoder",
+	"WindowConcatEncoder",
+	"TransformerHistoryEncoder",
 ]
