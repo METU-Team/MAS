@@ -7,6 +7,7 @@ tested, and replaced independently.
 from cola_framework.envs.mpe_wrapper import MPEWrapper
 from cola_framework.interfaces.environment import MultiAgentEnvironment
 from cola_framework.buffers.replay_buffer import ReplayBuffer
+from cola_framework.buffers.sequence_buffer import SequenceReplayBuffer
 from cola_framework.consensus.builder import ConsensusBuilder
 from cola_framework.consensus.history_aware_builder import HistoryAwareConsensusBuilder
 from cola_framework.embedding.consensus_embedding import ConsensusEmbedding
@@ -17,6 +18,7 @@ from cola_framework.loops.cola_training_loop import COLATrainingConfig, COLATrai
 from cola_framework.evaluation.policy_evaluator import PolicyEvaluator
 from cola_framework.monitoring.wandb_logger import WandbLogger
 from cola_framework.watchers.policy_watcher import PolicyWatcher, find_latest_checkpoint
+from cola_framework.utils.window_manager import ObservationWindowManager
 from cola_framework.encoders.identity_encoder import IdentityHistoryEncoder
 from cola_framework.encoders.gru_encoder import GRUHistoryEncoder
 from cola_framework.encoders.window_encoder import WindowConcatEncoder
@@ -26,6 +28,7 @@ __all__ = [
 	"MPEWrapper",
 	"MultiAgentEnvironment",
 	"ReplayBuffer",
+	"SequenceReplayBuffer",
 	"ConsensusBuilder",
 	"HistoryAwareConsensusBuilder",
 	"ConsensusEmbedding",
@@ -38,6 +41,7 @@ __all__ = [
 	"WandbLogger",
 	"PolicyWatcher",
 	"find_latest_checkpoint",
+	"ObservationWindowManager",
 	"IdentityHistoryEncoder",
 	"GRUHistoryEncoder",
 	"WindowConcatEncoder",
