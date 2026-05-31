@@ -12,6 +12,7 @@ from cola_framework.interfaces.replay_buffer import ExperienceReplay
 from cola_framework.interfaces.training_loop import TrainingLoopModule
 from cola_framework.interfaces.updater import UpdateModule
 from cola_framework.interfaces.value import ValueModule
+from cola_framework.interfaces.q_network import QNetworkModule
 
 __all__ = [
 	"ConsensusModule",
@@ -26,4 +27,5 @@ __all__ = [
 	"TrainingLoopModule",
 	"UpdateModule",
 	"ValueModule",
+	"QNetworkModule",
 ]
