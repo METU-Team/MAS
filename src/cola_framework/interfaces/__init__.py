@@ -11,6 +11,7 @@ from cola_framework.interfaces.policy import PolicyModule
 from cola_framework.interfaces.replay_buffer import ExperienceReplay
 from cola_framework.interfaces.training_loop import TrainingLoopModule
 from cola_framework.interfaces.updater import UpdateModule
+from cola_framework.interfaces.value import ValueModule
 
 __all__ = [
 	"ConsensusModule",
@@ -24,4 +25,5 @@ __all__ = [
 	"ExperienceReplay",
 	"TrainingLoopModule",
 	"UpdateModule",
+	"ValueModule",
 ]
