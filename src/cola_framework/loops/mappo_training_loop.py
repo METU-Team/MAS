@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Optional
 import torch
 
 from cola_framework.interfaces.training_loop import TrainingLoopModule
+from cola_framework.loops.cola_training_loop import _merge_update_metrics
 
 
 @dataclass
@@ -13,9 +14,9 @@ class MAPPOTrainingConfig:
     """Runtime configuration for the MAPPO training loop."""
 
     max_steps: int = 2_000_000
-    n_rollout_steps: int = 2048      # env steps collected before each update
+    n_rollout_steps: int = 2_048      # env steps collected before each update
     log_interval: int = 10_000
-    reward_window: int = 1_000
+    reward_window: int = 100          # number of recent *episodes* to average
 
 
 class MAPPOTrainingLoop(TrainingLoopModule):
@@ -23,11 +24,14 @@ class MAPPOTrainingLoop(TrainingLoopModule):
 
     Data flow per update cycle:
       1. Collect n_rollout_steps environment transitions.
-         For each step: CB.infer → embedding → GaussianActor.sample → env.step
+         For each step: CB.infer → embedding → GaussianActor.sample → env.step.
          Values are computed by the value functions for GAE.
       2. Compute GAE advantages (via RolloutBuffer.compute_returns_and_advantages).
       3. Call MAPPOUpdater.update(batch) which runs n_epochs × n_minibatches of PPO.
       4. Clear rollout buffer and repeat.
+
+    Episode tracking: rewards accumulate within each episode; episode_return is the
+    mean of the last reward_window completed episodes.
     """
 
     def __init__(
@@ -59,41 +63,34 @@ class MAPPOTrainingLoop(TrainingLoopModule):
         if len(self.value_fns) != self.env.n_agents:
             raise ValueError("Number of value_fns must match env.n_agents.")
 
-    @torch.no_grad()
-    def _act_and_estimate(
-        self,
-        obs: torch.Tensor,
-        state: torch.Tensor,
-    ):
-        """Sample actions and compute log-probs and state values.
+        # Log every time we complete this many PPO updates.
+        self._log_every_n_updates = max(
+            1, self.config.log_interval // self.config.n_rollout_steps
+        )
 
-        Returns:
-            actions   : [n_agents, action_dim]
-            log_probs : [n_agents]
-            values    : [n_agents]
-        """
+    @torch.no_grad()
+    def _act_and_estimate(self, obs: torch.Tensor, state: torch.Tensor):
         consensus = self.consensus_builder.infer(obs)
-        cemb = self.embedding_layer(consensus)              # [n_agents, emb_dim]
-        all_emb = cemb.reshape(1, -1)                       # [1, n_agents * emb_dim]
-        state_b = state.unsqueeze(0)                        # [1, state_dim]
+        cemb = self.embedding_layer(consensus)
+        all_emb = cemb.reshape(1, -1)
+        state_b = state.unsqueeze(0)
 
         actions_list, log_prob_list, value_list = [], [], []
         for a in range(self.env.n_agents):
-            # Use sample() from GaussianActor (not forward() which gives mean).
             action_a, lp_a = self.actors[a].sample(obs[a], cemb[a])
             v_a = self.value_fns[a](state_b, all_emb).squeeze()
             actions_list.append(action_a)
             log_prob_list.append(lp_a)
             value_list.append(v_a)
 
-        actions = torch.stack(actions_list, dim=0)          # [n_agents, action_dim]
-        log_probs = torch.stack(log_prob_list, dim=0)       # [n_agents]
-        values = torch.stack(value_list, dim=0)             # [n_agents]
-        return actions, log_probs, values
+        return (
+            torch.stack(actions_list, dim=0),
+            torch.stack(log_prob_list, dim=0),
+            torch.stack(value_list, dim=0),
+        )
 
     @torch.no_grad()
     def _bootstrap_values(self, obs: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
-        """Compute V(s_T) for the state following the last rollout step."""
         consensus = self.consensus_builder.infer(obs)
         cemb = self.embedding_layer(consensus)
         all_emb = cemb.reshape(1, -1)
@@ -109,61 +106,73 @@ class MAPPOTrainingLoop(TrainingLoopModule):
 
         step = 0
         update_count = 0
-        episode_rewards: List[float] = []
-        logs = []
-        last_update_metrics = None
+        logs: List[Dict] = []
+        last_update_metrics: Optional[Dict] = None
+
+        episode_returns: List[float] = []
+        episode_lengths: List[int] = []
+        _ep_reward = 0.0
+        _ep_length = 0
 
         while step < self.config.max_steps:
             # ── Rollout collection ───────────────────────────────────────────
             self.rollout_buffer.clear()
             for _ in range(self.config.n_rollout_steps):
                 actions, log_probs, values = self._act_and_estimate(obs, state)
-
                 next_obs, next_state, rewards, dones = self.env.step(actions)
 
                 self.rollout_buffer.push(
-                    obs=obs,
-                    state=state,
-                    actions=actions,
-                    rewards=rewards,
-                    dones=dones.float(),
-                    values=values,
-                    log_probs=log_probs,
+                    obs=obs, state=state, actions=actions,
+                    rewards=rewards, dones=dones.float(),
+                    values=values, log_probs=log_probs,
                 )
 
-                episode_rewards.append(float(rewards.mean().item()))
+                _ep_reward += float(rewards.mean().item())
+                _ep_length += 1
                 obs = next_obs
                 state = next_state
                 step += 1
 
                 if bool(dones.any().item()):
+                    episode_returns.append(_ep_reward)
+                    episode_lengths.append(_ep_length)
+                    _ep_reward = 0.0
+                    _ep_length = 0
                     obs, state = self.env.reset()
                     dones = torch.zeros(self.env.n_agents, device=obs.device)
 
                 if step >= self.config.max_steps:
                     break
 
-            # ── GAE computation ──────────────────────────────────────────────
+            # ── GAE and update ───────────────────────────────────────────────
             last_values = self._bootstrap_values(obs, state)
             self.rollout_buffer.compute_returns_and_advantages(last_values, dones)
-
-            # ── PPO update ───────────────────────────────────────────────────
-            batch = self.rollout_buffer.get()
-            last_update_metrics = self.updater.update(batch)
+            last_update_metrics = self.updater.update(self.rollout_buffer.get())
             update_count += 1
 
             # ── Logging ──────────────────────────────────────────────────────
-            if step % self.config.log_interval < self.config.n_rollout_steps or \
-               step >= self.config.max_steps:
-                window = episode_rewards[-self.config.reward_window :]
-                mean_reward = float(sum(window) / max(1, len(window)))
+            if update_count % self._log_every_n_updates == 0 or step >= self.config.max_steps:
+                n_ep = len(episode_returns)
+                if n_ep > 0:
+                    w_r = episode_returns[-self.config.reward_window:]
+                    w_l = episode_lengths[-self.config.reward_window:]
+                    mean_ep_ret = float(sum(w_r) / len(w_r))
+                    max_ep_ret  = float(max(w_r))
+                    min_ep_ret  = float(min(w_r))
+                    mean_ep_len = float(sum(w_l) / len(w_l))
+                else:
+                    mean_ep_ret = max_ep_ret = min_ep_ret = mean_ep_len = 0.0
+
                 record: Dict[str, object] = {
                     "step": step,
-                    "mean_reward": mean_reward,
+                    "episode_return": mean_ep_ret,
+                    "episode_return_max": max_ep_ret,
+                    "episode_return_min": min_ep_ret,
+                    "episode_count": n_ep,
+                    "mean_episode_length": mean_ep_len,
                     "update_count": update_count,
                 }
-                if last_update_metrics is not None:
-                    record.update(last_update_metrics)
+                _merge_update_metrics(record, last_update_metrics)
 
                 logs.append(record)
                 if self.on_log is not None:

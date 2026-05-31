@@ -95,6 +95,15 @@ class MAPPOUpdater(UpdateModule):
             (consensus == consensus[:, :1]).all(dim=1).float().mean().item()
         )
 
+        with torch.no_grad():
+            flat_c = consensus.reshape(-1)
+            k = self.consensus_builder.k
+            counts = torch.zeros(k, device=flat_c.device, dtype=torch.float32)
+            for i in range(k):
+                counts[i] = (flat_c == i).sum().float()
+            probs = counts / counts.sum().clamp(min=1.0)
+            consensus_entropy = -(probs * (probs + 1e-8).log()).sum().item()
+
         # ── 2. Recompute embeddings with updated student (no RL grad) ────────
         with torch.no_grad():
             emb = self.embedding_layer(consensus)           # [T, n_agents, emb_dim]
@@ -166,6 +175,7 @@ class MAPPOUpdater(UpdateModule):
         return {
             "loss_cb": float(loss_cb.item()),
             "consensus_agreement": float(consensus_agreement),
+            "consensus_entropy": float(consensus_entropy),
             "actor_losses": [_mean(actor_losses_all[a]) for a in range(n_agents)],
             "value_losses": [_mean(value_losses_all[a]) for a in range(n_agents)],
         }

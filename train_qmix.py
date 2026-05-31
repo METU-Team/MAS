@@ -93,6 +93,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb_run_name", type=str, default=None)
     parser.add_argument("--wandb_mode", type=str, default="online",
                         choices=["online", "offline", "disabled"])
+    parser.add_argument("--wandb_group", type=str, default=None)
+    parser.add_argument("--wandb_tags", type=str, default=None, help="Comma-separated WandB tags.")
     parser.add_argument("--api_key_path", type=str, default="src/apiKey.txt")
 
     # Runtime
@@ -111,11 +113,15 @@ def _maybe_create_wandb_logger(args, config_payload: dict) -> Optional[WandbLogg
     key_path = args.api_key_path
     if not os.path.isabs(key_path):
         key_path = os.path.join(REPO_ROOT, key_path)
+    tags = [t.strip() for t in args.wandb_tags.split(",")] if args.wandb_tags else None
+    group = args.wandb_group or "qmix_{}".format(args.scenario)
     return WandbLogger(
         project=args.wandb_project,
         run_name=args.wandb_run_name,
         entity=args.wandb_entity,
         config=config_payload,
+        tags=tags,
+        group=group,
         mode=args.wandb_mode,
         api_key_path=key_path,
     )
@@ -218,11 +224,13 @@ def main() -> None:
 
     def _on_log(record: dict) -> None:
         print(
-            "[train] step={step} mean_reward={mean_reward:.4f} "
-            "eps={epsilon:.4f}".format(**record)
+            "[train] step={step:>8d}  ep_return={episode_return:>8.3f}"
+            "  episodes={episode_count:>5d}  eps={epsilon:.4f}".format(**record)
         )
         if wandb_logger is not None:
-            wandb_logger.log_metrics(record, step=int(record["step"]))
+            step = int(record["step"])
+            wandb_record = {"train/" + k: v for k, v in record.items() if k != "step"}
+            wandb_logger.log_metrics(wandb_record, step=step)
 
     training_loop = QMIXTrainingLoop(
         env=env,
@@ -246,13 +254,14 @@ def main() -> None:
     eval_metrics = evaluator.evaluate(n_episodes=args.eval_episodes)
 
     if wandb_logger is not None:
-        wandb_logger.log_metrics(eval_metrics, step=int(train_result["total_steps"]))
+        eval_wandb = {"eval/" + k: v for k, v in eval_metrics.items()}
+        wandb_logger.log_metrics(eval_wandb, step=int(train_result["total_steps"]))
         wandb_logger.finish(
             {
                 "total_steps": train_result["total_steps"],
                 "train_steps": train_result["train_steps"],
-                "mean_episode_return_eval": eval_metrics["mean_episode_return"],
-                "consensus_agreement_eval": eval_metrics["consensus_agreement_eval"],
+                "eval/episode_return": eval_metrics["mean_episode_return"],
+                "eval/consensus_agreement": eval_metrics["consensus_agreement_eval"],
             }
         )
 

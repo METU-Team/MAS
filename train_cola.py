@@ -106,6 +106,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--wandb_run_name", type=str, default=None)
     parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"])
+    parser.add_argument("--wandb_group", type=str, default=None, help="WandB group for comparing COLA vs baseline.")
+    parser.add_argument("--wandb_tags", type=str, default=None, help="Comma-separated WandB tags.")
     parser.add_argument("--api_key_path", type=str, default="src/apiKey.txt")
 
     # Runtime and outputs
@@ -124,11 +126,22 @@ def _maybe_create_wandb_logger(args, config_payload: dict) -> Optional[WandbLogg
     if not os.path.isabs(key_path):
         key_path = os.path.join(REPO_ROOT, key_path)
 
+    tags = None
+    if args.wandb_tags:
+        tags = [t.strip() for t in args.wandb_tags.split(",") if t.strip()]
+
+    # Default group: algorithm family so WandB can overlay COLA vs baseline.
+    group = args.wandb_group
+    if group is None:
+        group = "maddpg_{}".format(args.scenario)
+
     return WandbLogger(
         project=args.wandb_project,
         run_name=args.wandb_run_name,
         entity=args.wandb_entity,
         config=config_payload,
+        tags=tags,
+        group=group,
         mode=args.wandb_mode,
         api_key_path=key_path,
     )
@@ -316,9 +329,15 @@ def main() -> None:
     wandb_logger = _maybe_create_wandb_logger(args, run_config)
 
     def _on_log(record: dict) -> None:
-        print("[train] step={step} mean_reward={mean_reward:.4f} noise={noise_std:.4f}".format(**record))
+        print(
+            "[train] step={step:>8d}  ep_return={episode_return:>8.3f}"
+            "  episodes={episode_count:>5d}  noise={noise_std:.4f}".format(**record)
+        )
         if wandb_logger is not None:
-            wandb_logger.log_metrics(record, step=int(record["step"]))
+            # Send with train/ prefix for structured WandB panels.
+            step = int(record["step"])
+            wandb_record = {"train/" + k: v for k, v in record.items() if k != "step"}
+            wandb_logger.log_metrics(wandb_record, step=step)
 
     if args.use_history_path:
         window_manager = ObservationWindowManager(
@@ -376,14 +395,16 @@ def main() -> None:
     eval_metrics = evaluator.evaluate(n_episodes=args.eval_episodes)
 
     if wandb_logger is not None:
-        wandb_logger.log_metrics(eval_metrics, step=int(train_result["total_steps"]))
+        # Send evaluation metrics with eval/ prefix.
+        eval_wandb = {"eval/" + k: v for k, v in eval_metrics.items()}
+        wandb_logger.log_metrics(eval_wandb, step=int(train_result["total_steps"]))
         wandb_logger.finish(
             {
                 "total_steps": train_result["total_steps"],
                 "train_steps": train_result["train_steps"],
                 "final_noise_std": train_result["final_noise_std"],
-                "mean_episode_return_eval": eval_metrics["mean_episode_return"],
-                "consensus_agreement_eval": eval_metrics["consensus_agreement_eval"],
+                "eval/episode_return": eval_metrics["mean_episode_return"],
+                "eval/consensus_agreement": eval_metrics["consensus_agreement_eval"],
             }
         )
 

@@ -78,6 +78,17 @@ class MADDPGUpdater(UpdateModule):
             (consensus == consensus[:, :1]).all(dim=1).float().mean().item()
         )
 
+        # Entropy of the marginal consensus label distribution over batch × agents.
+        # Near log(K) → CB uses all classes uniformly; near 0 → collapsed to one class.
+        with torch.no_grad():
+            flat_c = consensus.reshape(-1)
+            k = self.consensus_builder.k
+            counts = torch.zeros(k, device=flat_c.device, dtype=torch.float32)
+            for i in range(k):
+                counts[i] = (flat_c == i).sum().float()
+            probs = counts / counts.sum().clamp(min=1.0)
+            consensus_entropy = -(probs * (probs + 1e-8).log()).sum().item()
+
         # 2) Build detached consensus embeddings for RL updates.
         emb_c = self.embedding_layer(consensus).detach()
         with torch.no_grad():
@@ -158,6 +169,7 @@ class MADDPGUpdater(UpdateModule):
         return {
             "loss_cb": float(loss_cb.item()),
             "consensus_agreement": float(consensus_agreement),
+            "consensus_entropy": float(consensus_entropy),
             "critic_losses": critic_losses,
             "actor_losses": actor_losses,
         }
