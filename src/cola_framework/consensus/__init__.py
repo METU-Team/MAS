@@ -2,5 +2,6 @@
 
 from cola_framework.consensus.builder import ConsensusBuilder
 from cola_framework.consensus.history_aware_builder import HistoryAwareConsensusBuilder
+from cola_framework.consensus.null_builder import NullConsensusBuilder
 
-__all__ = ["ConsensusBuilder", "HistoryAwareConsensusBuilder"]
+__all__ = ["ConsensusBuilder", "HistoryAwareConsensusBuilder", "NullConsensusBuilder"]

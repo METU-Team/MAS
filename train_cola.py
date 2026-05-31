@@ -24,6 +24,7 @@ from cola_framework.buffers.replay_buffer import ReplayBuffer
 from cola_framework.buffers.sequence_buffer import SequenceReplayBuffer
 from cola_framework.consensus.builder import ConsensusBuilder
 from cola_framework.consensus.history_aware_builder import HistoryAwareConsensusBuilder
+from cola_framework.consensus.null_builder import NullConsensusBuilder
 from cola_framework.critics.centralized_critic import Critic
 from cola_framework.encoders.gru_encoder import GRUHistoryEncoder
 from cola_framework.encoders.identity_encoder import IdentityHistoryEncoder
@@ -60,6 +61,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--k", type=int, default=4)
     parser.add_argument("--emb_dim", type=int, default=16)
     parser.add_argument("--hidden_dim", type=int, default=64)
+
+    # Baseline: disable COLA (use NullConsensusBuilder) for fair comparison
+    parser.add_argument("--no_cola", action="store_true", help="Run vanilla MADDPG without COLA consensus signal.")
 
     # Optional history-aware path (classic path remains default)
     parser.add_argument("--use_history_path", action="store_true")
@@ -216,11 +220,14 @@ def main() -> None:
             state_dim=env.state_dim,
             device=device,
         )
-        consensus_builder = ConsensusBuilder(
-            obs_dim=env.obs_dim,
-            k=args.k,
-            hidden_dim=args.hidden_dim,
-        ).to(device)
+        if args.no_cola:
+            consensus_builder = NullConsensusBuilder(k=args.k).to(device)
+        else:
+            consensus_builder = ConsensusBuilder(
+                obs_dim=env.obs_dim,
+                k=args.k,
+                hidden_dim=args.hidden_dim,
+            ).to(device)
 
     embedding_layer = ConsensusEmbedding(
         k=args.k,
