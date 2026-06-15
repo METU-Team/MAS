@@ -1,6 +1,6 @@
 """PettingZoo MPE wrapper that matches the COLA environment interface."""
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -12,13 +12,18 @@ class MPEWrapper(MultiAgentEnvironment):
     """Wraps PettingZoo parallel MPE envs into tensor-first outputs.
 
     Supported scenarios:
-    - simple_spread
-    - simple_tag
+    - simple_spread: fully cooperative, all ``n_agents`` are learner-controlled.
+    - simple_tag: predator-prey. To match COLA's fully-cooperative assumption
+      (and the original paper's setup), the learner controls a *cooperative team
+      of ``n_agents`` predators* while the single prey is driven by a fixed
+      heuristic flee policy. The prey is NOT learned and is excluded from the
+      observation/consensus/critic tensors, so the consensus builder only ever
+      sees the cooperative sub-team.
 
     Note:
-    `simple_tag` has heterogeneous observation sizes across roles.
-    We pad each agent observation to `self.obs_dim = max(obs_dim_per_agent)` so
-    downstream modules can operate on fixed-size tensors.
+    `simple_tag` predators share homogeneous observation sizes; we still pad each
+    controlled observation to `self.obs_dim = max(obs_dim_per_controlled_agent)`
+    so downstream modules can operate on fixed-size tensors.
     """
 
     def __init__(
@@ -28,38 +33,55 @@ class MPEWrapper(MultiAgentEnvironment):
         max_cycles: int = 100,
         device: str = "cpu",
         render_mode: Optional[str] = None,
+        heuristic_prey: bool = True,
     ) -> None:
         self.scenario = scenario
         self.n_agents = n_agents
         self.max_cycles = max_cycles
         self.device = device
         self.render_mode = render_mode
+        self.heuristic_prey = heuristic_prey
 
         self.env = self._build_env()
-        self.agents = list(self.env.possible_agents)
+        self._all_agents = list(self.env.possible_agents)
+
+        # Split env agents into learner-controlled and scripted (heuristic) sets.
+        if self.scenario == "simple_tag":
+            self.agents = [a for a in self._all_agents if a.startswith("adversary")]
+            self.scripted_agents = [a for a in self._all_agents if not a.startswith("adversary")]
+        else:
+            self.agents = list(self._all_agents)
+            self.scripted_agents = []
+
+        # n_agents reported downstream is the number of *controlled* agents.
+        self.n_agents = len(self.agents)
+
+        # World handle (for scripted policies); positions update in place on reset.
+        self._world = getattr(self.env.unwrapped, "world", None)
 
         obs_dict, _ = self.env.reset()
         self._obs_dim_by_agent = {
             agent: int(obs_dict[agent].shape[0])
-            for agent in self.agents
+            for agent in self._all_agents
         }
-        self.obs_dim = max(self._obs_dim_by_agent.values())
+        # Dimensions are computed over the controlled agents only.
+        self.obs_dim = max(self._obs_dim_by_agent[a] for a in self.agents)
         self.state_dim = self.obs_dim * self.n_agents
         self._action_dim_by_agent = {
             agent: int(self.env.action_space(agent).shape[0])
-            for agent in self.agents
+            for agent in self._all_agents
         }
-        self.action_dim = max(self._action_dim_by_agent.values())
+        self.action_dim = max(self._action_dim_by_agent[a] for a in self.agents)
 
         # Continuous MPE actions are typically Box([0,1]); actor outputs are
         # in [-1,1], so we map them into the env range before stepping.
         self._action_low = {
             agent: self.env.action_space(agent).low.astype(np.float32)
-            for agent in self.agents
+            for agent in self._all_agents
         }
         self._action_high = {
             agent: self.env.action_space(agent).high.astype(np.float32)
-            for agent in self.agents
+            for agent in self._all_agents
         }
 
     def _build_env(self):
@@ -76,11 +98,11 @@ class MPEWrapper(MultiAgentEnvironment):
         if self.scenario == "simple_tag":
             from pettingzoo.mpe import simple_tag_v3
 
-            n_adversaries = max(1, self.n_agents - 1)
-            n_good = 1
+            # Learner controls a cooperative team of `n_agents` predators; one
+            # heuristic prey is added but not counted as a controlled agent.
             return simple_tag_v3.parallel_env(
-                num_good=n_good,
-                num_adversaries=n_adversaries,
+                num_good=1,
+                num_adversaries=self.n_agents,
                 num_obstacles=2,
                 max_cycles=self.max_cycles,
                 continuous_actions=True,
@@ -102,7 +124,7 @@ class MPEWrapper(MultiAgentEnvironment):
     def step(self, action_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run one environment step.
 
-        action_tensor: [n_agents, action_dim]
+        action_tensor: [n_agents, action_dim] for the controlled agents only.
         returns:
             next_obs: [n_agents, obs_dim]
             next_state: [state_dim]
@@ -111,6 +133,8 @@ class MPEWrapper(MultiAgentEnvironment):
         """
         action_tensor = action_tensor.detach().to("cpu")
         action_dict = {}
+
+        # Controlled agents: map actor outputs [-1,1] -> env action range.
         for i, agent in enumerate(self.agents):
             raw_action = np.asarray(action_tensor[i].numpy(), dtype=np.float32).reshape(-1)
             action_dim = self._action_dim_by_agent[agent]
@@ -127,6 +151,10 @@ class MPEWrapper(MultiAgentEnvironment):
             # Affine map from [-1,1] to [low, high], then clip for safety.
             scaled = 0.5 * (raw_action + 1.0) * (high - low) + low
             action_dict[agent] = np.clip(scaled, low, high)
+
+        # Scripted agents (e.g. prey): heuristic action already in env range.
+        for agent in self.scripted_agents:
+            action_dict[agent] = self._heuristic_prey_action(agent)
 
         obs_d, rew_d, term_d, trunc_d, _ = self.env.step(action_dict)
 
@@ -147,6 +175,56 @@ class MPEWrapper(MultiAgentEnvironment):
             rewards.to(self.device),
             dones.to(self.device),
         )
+
+    def _heuristic_prey_action(self, agent_name: str) -> np.ndarray:
+        """Fixed flee policy: move away from the nearest predator.
+
+        Reads true positions from the world (not the learner) and emits a 5-dim
+        continuous action [no_op, +x, -x, +y, +y] in [0,1] whose net force points
+        away from the closest adversary, with a soft push back inside the arena
+        so the prey does not simply run off-screen.
+        """
+        action_dim = self._action_dim_by_agent[agent_name]
+        action = np.zeros(action_dim, dtype=np.float32)
+
+        if self._world is None:
+            return action  # No world access -> stay still (degenerate but safe).
+
+        by_name = {ag.name: ag for ag in self._world.agents}
+        prey = by_name.get(agent_name)
+        if prey is None:
+            return action
+        prey_pos = np.asarray(prey.state.p_pos, dtype=np.float32)
+
+        adv_positions = [
+            np.asarray(ag.state.p_pos, dtype=np.float32)
+            for ag in self._world.agents
+            if getattr(ag, "adversary", False)
+        ]
+        if not adv_positions:
+            return action
+
+        # Direction away from the nearest predator.
+        dists = [np.linalg.norm(prey_pos - p) for p in adv_positions]
+        nearest = adv_positions[int(np.argmin(dists))]
+        flee = prey_pos - nearest
+        norm = float(np.linalg.norm(flee))
+        direction = flee / norm if norm > 1e-6 else np.array([1.0, 0.0], dtype=np.float32)
+
+        # Soft boundary avoidance: if near/outside the arena edge, steer inward.
+        for c in (0, 1):
+            if prey_pos[c] > 1.0 and direction[c] > 0:
+                direction[c] = -abs(direction[c])
+            elif prey_pos[c] < -1.0 and direction[c] < 0:
+                direction[c] = abs(direction[c])
+
+        # Map (dx, dy) force into the [no_op, +x, -x, +y, +y] continuous slots.
+        if action_dim >= 5:
+            action[1] = max(float(direction[0]), 0.0)
+            action[2] = max(float(-direction[0]), 0.0)
+            action[3] = max(float(direction[1]), 0.0)
+            action[4] = max(float(-direction[1]), 0.0)
+        return np.clip(action, 0.0, 1.0)
 
     def _dict_to_tensor(self, obs_dict: Dict[str, np.ndarray]) -> torch.Tensor:
         ordered = []

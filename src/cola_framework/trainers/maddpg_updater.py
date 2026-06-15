@@ -32,6 +32,7 @@ class MADDPGUpdater(UpdateModule):
         opt_critics: List[torch.optim.Optimizer],
         gamma: float = 0.95,
         tau_polyak: float = 0.01,
+        opt_emb: torch.optim.Optimizer = None,
     ) -> None:
         self.consensus_builder = consensus_builder
         self.embedding_layer = embedding_layer
@@ -42,6 +43,11 @@ class MADDPGUpdater(UpdateModule):
         self.opt_cb = opt_cb
         self.opt_actors = opt_actors
         self.opt_critics = opt_critics
+        # When provided, the one-hot -> dense embedding layer is trained end-to-end
+        # by the critic (value) loss, as in the COLA paper. The discrete argmax
+        # label is a hard firewall, so this never sends gradient to the consensus
+        # builder. When None, the embedding stays frozen (legacy behaviour).
+        self.opt_emb = opt_emb
         self.gamma = gamma
         self.tau_polyak = tau_polyak
 
@@ -117,7 +123,11 @@ class MADDPGUpdater(UpdateModule):
         critic_losses = []
         actor_losses = []
 
-        # 4) Critic updates.
+        # 4) Critic updates. When opt_emb is set, recompute a fresh, grad-carrying
+        # embedding for each critic so the value loss also trains the embedding
+        # layer; its gradients accumulate across critics and are applied once below.
+        if self.opt_emb is not None:
+            self.opt_emb.zero_grad()
         for a in range(n_agents):
             with torch.no_grad():
                 q_target = self.target_critics[a](
@@ -127,13 +137,19 @@ class MADDPGUpdater(UpdateModule):
                 )
                 y = rewards[:, a : a + 1] + self.gamma * q_target * (1.0 - dones[:, a : a + 1])
 
-            q_pred = self.critics[a](state, all_emb_c, all_actions)
+            if self.opt_emb is not None:
+                emb_for_critic = self.embedding_layer(consensus).reshape(batch_size, -1)
+            else:
+                emb_for_critic = all_emb_c
+            q_pred = self.critics[a](state, emb_for_critic, all_actions)
             loss_c = F.mse_loss(q_pred, y)
 
             self.opt_critics[a].zero_grad()
             loss_c.backward()
             self.opt_critics[a].step()
             critic_losses.append(float(loss_c.item()))
+        if self.opt_emb is not None:
+            self.opt_emb.step()
 
         # 5) Actor updates (only actor parameters receive policy gradient).
         for a in range(n_agents):

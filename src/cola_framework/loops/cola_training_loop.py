@@ -21,6 +21,8 @@ class COLATrainingConfig:
     noise_decay: float = 0.9999
     log_interval: int = 10_000
     reward_window: int = 100    # number of recent *episodes* to average
+    eval_interval: int = 20_000  # run periodic greedy eval every N steps (0 = off)
+    eval_episodes: int = 20      # greedy episodes per evaluation, as in the paper
 
 
 def _merge_update_metrics(record: Dict, um: Dict) -> None:
@@ -92,6 +94,52 @@ class COLATrainingLoop(TrainingLoopModule):
         if noise_std > 0.0:
             actions = actions + noise_std * torch.randn_like(actions)
         return actions.clamp(-1.0, 1.0)
+
+    @torch.no_grad()
+    def _evaluate(self) -> Dict[str, object]:
+        """Run greedy (noise-free) episodes and report mean return + consensus
+        diversity, matching the paper's periodic greedy-test protocol.
+
+        Uses self.env, so the caller must reset the env afterwards to resume
+        training cleanly. A step cap guards against any non-terminating episode.
+        """
+        n = self.env.n_agents
+        max_len = int(getattr(self.env, "max_cycles", 200)) + 5
+        returns: List[float] = []
+        labels: List[torch.Tensor] = []
+        distinct_per_ep: List[int] = []
+
+        for _ in range(self.config.eval_episodes):
+            obs, _ = self.env.reset()
+            ep_reward = 0.0
+            ep_labels: List[torch.Tensor] = []
+            for _t in range(max_len):
+                consensus = self.consensus_builder.infer(obs)
+                ep_labels.append(consensus)
+                cemb = self.embedding_layer(consensus)
+                actions = torch.stack(
+                    [self.actors[a](obs[a], cemb[a]) for a in range(n)], dim=0
+                ).clamp(-1.0, 1.0)
+                obs, _, rewards, dones = self.env.step(actions)
+                ep_reward += float(rewards.mean().item())
+                if bool(dones.any().item()):
+                    break
+            returns.append(ep_reward)
+            ep_lab = torch.stack(ep_labels)
+            labels.append(ep_lab.reshape(-1))
+            distinct_per_ep.append(int(ep_lab.unique().numel()))
+
+        flat = torch.cat(labels)
+        k = int(getattr(self.consensus_builder, "k", int(flat.max().item()) + 1))
+        counts = torch.bincount(flat, minlength=k).float()
+        probs = counts / counts.sum().clamp(min=1.0)
+        entropy = float(-(probs * (probs + 1e-8).log()).sum().item())
+        mean_ret = float(sum(returns) / len(returns))
+        return {
+            "eval_episode_return": mean_ret,
+            "eval_consensus_entropy": entropy,
+            "eval_distinct_classes": float(sum(distinct_per_ep) / len(distinct_per_ep)),
+        }
 
     def run(self) -> Dict[str, object]:
         obs, state = self.env.reset()
@@ -166,11 +214,28 @@ class COLATrainingLoop(TrainingLoopModule):
                 if last_update_metrics is not None:
                     _merge_update_metrics(record, last_update_metrics)
 
+                # Periodic greedy evaluation (paper-faithful learning curve).
+                # eval_interval is a multiple of log_interval, so eval metrics are
+                # merged into the current record — keeping one record schema.
+                ran_eval = (
+                    self.config.eval_interval > 0
+                    and step >= self.config.warmup_steps
+                    and step % self.config.eval_interval == 0
+                )
+                if ran_eval:
+                    record.update(self._evaluate())
+
                 logs.append(record)
                 if self.on_log is not None:
                     self.on_log(record)
                 if self.metrics_logger is not None:
                     self.metrics_logger.log_metrics(record, step=step)
+
+                if ran_eval:
+                    # Eval consumed the env; restart a clean training episode.
+                    obs, state = self.env.reset()
+                    _ep_reward = 0.0
+                    _ep_length = 0
 
         result = {
             "total_steps": step,

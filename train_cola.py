@@ -25,6 +25,8 @@ from cola_framework.buffers.sequence_buffer import SequenceReplayBuffer
 from cola_framework.consensus.builder import ConsensusBuilder
 from cola_framework.consensus.history_aware_builder import HistoryAwareConsensusBuilder
 from cola_framework.consensus.null_builder import NullConsensusBuilder
+from cola_framework.consensus.random_label_builder import RandomLabelConsensusBuilder
+from cola_framework.consensus.shuffled_label_builder import ShuffledLabelConsensusBuilder
 from cola_framework.critics.centralized_critic import Critic
 from cola_framework.encoders.gru_encoder import GRUHistoryEncoder
 from cola_framework.encoders.identity_encoder import IdentityHistoryEncoder
@@ -65,6 +67,20 @@ def _build_parser() -> argparse.ArgumentParser:
     # Baseline: disable COLA (use NullConsensusBuilder) for fair comparison
     parser.add_argument("--no_cola", action="store_true", help="Run vanilla MADDPG without COLA consensus signal.")
 
+    # Control-ablation: swap only the *content* of the consensus label while
+    # keeping the surrounding architecture (embedding dim, actor/critic) identical.
+    #   cola     -> real DINO-style ConsensusBuilder (learned view-invariant label)
+    #   random   -> fixed random per-agent label, never changes (RandomLabelConsensusBuilder)
+    #   shuffled -> real CB labels permuted across agents per batch element (ShuffledLabelConsensusBuilder)
+    #   no_cola  -> all-zero label (NullConsensusBuilder)
+    parser.add_argument(
+        "--cb_variant",
+        type=str,
+        default="cola",
+        choices=["cola", "random", "shuffled", "no_cola"],
+        help="Consensus-builder content variant for control-ablation studies.",
+    )
+
     # Optional history-aware path (classic path remains default)
     parser.add_argument("--use_history_path", action="store_true")
     parser.add_argument(
@@ -84,6 +100,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr_cb", type=float, default=3e-4)
     parser.add_argument("--lr_actor", type=float, default=1e-2)
     parser.add_argument("--lr_critic", type=float, default=1e-2)
+    # Embedding (one-hot -> dense) learning rate. Kept lower than the critic lr by
+    # default since a shared module trained by all critics can destabilize at 1e-2.
+    parser.add_argument("--lr_emb", type=float, default=1e-3)
+    # Teacher-temperature warmup for the consensus builder (anti-collapse). Start
+    # value <= 0 disables it (constant tau_teacher, the paper default).
+    parser.add_argument("--cb_tau_teacher_warmup_start", type=float, default=0.0)
+    parser.add_argument("--cb_tau_teacher_warmup_steps", type=int, default=0)
 
     # Replay and loop
     parser.add_argument("--buffer_capacity", type=int, default=1000000)
@@ -96,6 +119,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--noise_decay", type=float, default=0.9999)
     parser.add_argument("--log_interval", type=int, default=10000)
     parser.add_argument("--reward_window", type=int, default=1000)
+    parser.add_argument("--eval_interval", type=int, default=20000)
 
     # Evaluation
     parser.add_argument("--eval_episodes", type=int, default=20)
@@ -114,6 +138,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--save_model_path", type=str, default="models/final_cola_model.pth")
+    
 
     return parser
 
@@ -233,13 +258,35 @@ def main() -> None:
             state_dim=env.state_dim,
             device=device,
         )
-        if args.no_cola:
+        # --no_cola is kept as a backward-compatible alias for the no_cola variant.
+        cb_variant = "no_cola" if args.no_cola else args.cb_variant
+
+        # All variants share K, embedding dim, hidden sizes, temperatures, and EMA
+        # params so the only thing that differs across conditions is the *content*
+        # of the consensus label, not the surrounding architecture.
+        if cb_variant == "no_cola":
             consensus_builder = NullConsensusBuilder(k=args.k).to(device)
-        else:
+        elif cb_variant == "random":
+            consensus_builder = RandomLabelConsensusBuilder(
+                n_agents=env.n_agents,
+                k=args.k,
+                seed=args.seed,
+            ).to(device)
+        elif cb_variant == "shuffled":
+            consensus_builder = ShuffledLabelConsensusBuilder(
+                obs_dim=env.obs_dim,
+                k=args.k,
+                hidden_dim=args.hidden_dim,
+                tau_teacher_warmup_start=args.cb_tau_teacher_warmup_start,
+                tau_teacher_warmup_steps=args.cb_tau_teacher_warmup_steps,
+            ).to(device)
+        else:  # "cola"
             consensus_builder = ConsensusBuilder(
                 obs_dim=env.obs_dim,
                 k=args.k,
                 hidden_dim=args.hidden_dim,
+                tau_teacher_warmup_start=args.cb_tau_teacher_warmup_start,
+                tau_teacher_warmup_steps=args.cb_tau_teacher_warmup_steps,
             ).to(device)
 
     embedding_layer = ConsensusEmbedding(
@@ -282,6 +329,10 @@ def main() -> None:
 
     opt_actors = [torch.optim.Adam(actor.parameters(), lr=args.lr_actor) for actor in actors]
     opt_critics = [torch.optim.Adam(critic.parameters(), lr=args.lr_critic) for critic in critics]
+    # Train the one-hot -> dense embedding end-to-end with the critic loss (as in
+    # the COLA paper). Shared across all variants so the architecture is identical
+    # in the control ablation; only the consensus label content differs.
+    opt_emb = torch.optim.Adam(embedding_layer.parameters(), lr=args.lr_emb)
 
     if args.use_history_path:
         updater = HistoryAwareMADDPGUpdater(
@@ -310,6 +361,7 @@ def main() -> None:
             opt_critics=opt_critics,
             gamma=args.gamma,
             tau_polyak=args.tau_polyak,
+            opt_emb=opt_emb,
         )
 
     loop_config = COLATrainingConfig(
@@ -322,10 +374,15 @@ def main() -> None:
         noise_decay=args.noise_decay,
         log_interval=args.log_interval,
         reward_window=args.reward_window,
+        eval_interval=args.eval_interval,
+        eval_episodes=args.eval_episodes,
     )
 
     run_config = vars(args).copy()
     run_config["resolved_device"] = device
+    # Surface the effective variant (after the --no_cola alias) for WandB grouping.
+    if not args.use_history_path:
+        run_config["cb_variant"] = "no_cola" if args.no_cola else args.cb_variant
     wandb_logger = _maybe_create_wandb_logger(args, run_config)
 
     def _on_log(record: dict) -> None:
@@ -334,9 +391,19 @@ def main() -> None:
             "  episodes={episode_count:>5d}  noise={noise_std:.4f}".format(**record)
         )
         if wandb_logger is not None:
-            # Send with train/ prefix for structured WandB panels.
+            # Structured WandB panels: periodic greedy-eval keys go under eval/,
+            # everything else under train/. Periodic eval is logged at every
+            # eval_interval step, so eval/episode_return renders as a CURVE
+            # (the paper-style learning curve), not a single end-of-run point.
             step = int(record["step"])
-            wandb_record = {"train/" + k: v for k, v in record.items() if k != "step"}
+            wandb_record = {}
+            for k, v in record.items():
+                if k == "step":
+                    continue
+                if k.startswith("eval_"):
+                    wandb_record["eval/" + k[len("eval_"):]] = v
+                else:
+                    wandb_record["train/" + k] = v
             wandb_logger.log_metrics(wandb_record, step=step)
 
     if args.use_history_path:
