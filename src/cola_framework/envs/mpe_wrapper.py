@@ -34,6 +34,7 @@ class MPEWrapper(MultiAgentEnvironment):
         device: str = "cpu",
         render_mode: Optional[str] = None,
         heuristic_prey: bool = True,
+        obs_mask: str = "none",
     ) -> None:
         self.scenario = scenario
         self.n_agents = n_agents
@@ -41,6 +42,7 @@ class MPEWrapper(MultiAgentEnvironment):
         self.device = device
         self.render_mode = render_mode
         self.heuristic_prey = heuristic_prey
+        self.obs_mask = obs_mask
 
         self.env = self._build_env()
         self._all_agents = list(self.env.possible_agents)
@@ -83,6 +85,51 @@ class MPEWrapper(MultiAgentEnvironment):
             agent: self.env.action_space(agent).high.astype(np.float32)
             for agent in self._all_agents
         }
+
+        # Partial-observability mask: zero out chosen slices of every controlled
+        # observation so agents must coordinate through the consensus label rather
+        # than reading neighbours directly. Applied in `_dict_to_tensor`, so both
+        # actor/consensus inputs and the concatenated `state` reflect the masking.
+        self._obs_keep = self._build_obs_keep_mask()
+
+    def _build_obs_keep_mask(self) -> Optional[np.ndarray]:
+        """Return a [obs_dim] float mask (1=keep, 0=hide), or None for no masking.
+
+        Only ``simple_spread`` is supported; its per-agent layout for ``N`` agents
+        (``N`` landmarks) is::
+
+            [self_vel(2), self_pos(2), landmark_rel(2N), other_rel(2(N-1)), comm(2(N-1))]
+
+        ``others`` hides the other-agents' relative positions; ``others_comm``
+        also hides the communication channel; ``comm`` hides only communication.
+        """
+        if self.obs_mask in ("none", None):
+            return None
+        if self.scenario != "simple_spread":
+            raise ValueError(
+                "obs_mask='{}' is only supported for simple_spread (got scenario "
+                "'{}').".format(self.obs_mask, self.scenario)
+            )
+
+        n = self.n_agents
+        base = 4  # self_vel(2) + self_pos(2)
+        others_start = base + 2 * n           # after landmark_rel(2N)
+        comm_start = others_start + 2 * (n - 1)
+        comm_end = comm_start + 2 * (n - 1)
+
+        keep = np.ones(self.obs_dim, dtype=np.float32)
+        if self.obs_mask == "others":
+            keep[others_start:comm_start] = 0.0
+        elif self.obs_mask == "comm":
+            keep[comm_start:comm_end] = 0.0
+        elif self.obs_mask == "others_comm":
+            keep[others_start:comm_end] = 0.0
+        else:
+            raise ValueError(
+                "Unknown obs_mask '{}'. Use one of: none, others, comm, "
+                "others_comm.".format(self.obs_mask)
+            )
+        return keep
 
     def _build_env(self):
         if self.scenario == "simple_spread":
@@ -240,6 +287,9 @@ class MPEWrapper(MultiAgentEnvironment):
                 obs = np.concatenate([obs, pad], axis=0)
             elif obs.shape[0] > self.obs_dim:
                 obs = obs[: self.obs_dim]
+
+            if self._obs_keep is not None:
+                obs = obs * self._obs_keep
 
             ordered.append(obs)
 

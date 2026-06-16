@@ -57,6 +57,14 @@ def _build_parser() -> argparse.ArgumentParser:
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", choices=["simple_spread", "simple_tag"])
     parser.add_argument("--n_agents", type=int, default=3)
+    parser.add_argument(
+        "--obs_mask",
+        type=str,
+        default="none",
+        choices=["none", "others", "comm", "others_comm"],
+        help="Partial-observability mask for simple_spread: hide other-agent "
+        "relative positions and/or the communication channel.",
+    )
     parser.add_argument("--max_cycles", type=int, default=100)
 
     # Core model
@@ -109,7 +117,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cb_tau_teacher_warmup_steps", type=int, default=0)
 
     # Replay and loop
-    parser.add_argument("--buffer_capacity", type=int, default=1000000)
+    parser.add_argument("--buffer_capacity", type=int, default=250000)
     parser.add_argument("--batch_size", type=int, default=1024)
     parser.add_argument("--warmup_steps", type=int, default=1024)
     parser.add_argument("--train_freq", type=int, default=100)
@@ -231,6 +239,7 @@ def main() -> None:
         n_agents=args.n_agents,
         max_cycles=args.max_cycles,
         device=device,
+        obs_mask=args.obs_mask,
     )
 
     if args.use_history_path:
