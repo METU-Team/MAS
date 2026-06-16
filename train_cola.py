@@ -429,6 +429,21 @@ def main() -> None:
             window=args.history_window,
             device=device,
         )
+        # Separate window manager for periodic greedy eval so it never clobbers
+        # the training window state.
+        periodic_eval_wm = ObservationWindowManager(
+            n_agents=env.n_agents,
+            obs_dim=env.obs_dim,
+            window=args.history_window,
+            device=device,
+        )
+        periodic_evaluator = HistoryAwarePolicyEvaluator(
+            env=env,
+            window_manager=periodic_eval_wm,
+            consensus_builder=consensus_builder,
+            embedding_layer=embedding_layer,
+            actors=actors,
+        )
         training_loop = HistoryAwareCOLATrainingLoop(
             env=env,
             replay_buffer=replay_buffer,
@@ -439,6 +454,7 @@ def main() -> None:
             updater=updater,
             config=loop_config,
             on_log=_on_log,
+            evaluator=periodic_evaluator,
         )
     else:
         training_loop = COLATrainingLoop(

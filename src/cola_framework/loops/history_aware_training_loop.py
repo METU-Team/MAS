@@ -30,6 +30,7 @@ class HistoryAwareCOLATrainingLoop(TrainingLoopModule):
         config: COLATrainingConfig,
         on_log: Optional[Callable[[Dict[str, object]], None]] = None,
         metrics_logger=None,
+        evaluator=None,
     ) -> None:
         self.env = env
         self.replay_buffer = replay_buffer
@@ -41,6 +42,7 @@ class HistoryAwareCOLATrainingLoop(TrainingLoopModule):
         self.config = config
         self.on_log = on_log
         self.metrics_logger = metrics_logger
+        self.evaluator = evaluator
 
         if len(self.actors) != self.env.n_agents:
             raise ValueError("Number of actors must match env.n_agents.")
@@ -71,6 +73,8 @@ class HistoryAwareCOLATrainingLoop(TrainingLoopModule):
         step = 0
         train_steps = 0
         episode_rewards = []
+        episode_returns: List[float] = []
+        _ep_reward = 0.0
         logs = []
         last_update_metrics = None
 
@@ -98,9 +102,13 @@ class HistoryAwareCOLATrainingLoop(TrainingLoopModule):
             obs = next_obs
             state = next_state
             step += 1
-            episode_rewards.append(float(rewards.mean().item()))
+            _r = float(rewards.mean().item())
+            episode_rewards.append(_r)
+            _ep_reward += _r
 
             if bool(dones.any().item()):
+                episode_returns.append(_ep_reward)
+                _ep_reward = 0.0
                 obs, state = self.env.reset()
                 self.window_manager.reset()
                 self.window_manager.push(obs)
@@ -118,8 +126,15 @@ class HistoryAwareCOLATrainingLoop(TrainingLoopModule):
             if step % self.config.log_interval == 0:
                 window = episode_rewards[-self.config.reward_window :]
                 mean_reward = float(sum(window) / max(1, len(window)))
+                if episode_returns:
+                    rw = episode_returns[-self.config.reward_window :]
+                    mean_ep_ret = float(sum(rw) / len(rw))
+                else:
+                    mean_ep_ret = _ep_reward
                 record = {
                     "step": step,
+                    "episode_return": mean_ep_ret,
+                    "episode_count": len(episode_returns),
                     "mean_reward": mean_reward,
                     "noise_std": float(noise_std),
                     "buffer_size": int(len(self.replay_buffer)),
@@ -128,11 +143,30 @@ class HistoryAwareCOLATrainingLoop(TrainingLoopModule):
                 if last_update_metrics is not None:
                     record.update(last_update_metrics)
 
+                # Periodic greedy eval (paper-faithful learning curve), mirroring
+                # the per-timestep loop: eval_interval is a multiple of log_interval
+                # so eval metrics merge into the current record schema.
+                ran_eval = (
+                    self.evaluator is not None
+                    and self.config.eval_interval > 0
+                    and step >= self.config.warmup_steps
+                    and step % self.config.eval_interval == 0
+                )
+                if ran_eval:
+                    record.update(self.evaluator.evaluate(self.config.eval_episodes))
+
                 logs.append(record)
                 if self.on_log is not None:
                     self.on_log(record)
                 if self.metrics_logger is not None:
                     self.metrics_logger.log_metrics(record, step=step)
+
+                if ran_eval:
+                    # Eval consumed the shared env; restart a clean training episode.
+                    obs, state = self.env.reset()
+                    self.window_manager.reset()
+                    self.window_manager.push(obs)
+                    _ep_reward = 0.0
 
         result = {
             "total_steps": step,
