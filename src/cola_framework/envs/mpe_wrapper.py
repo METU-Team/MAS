@@ -35,6 +35,7 @@ class MPEWrapper(MultiAgentEnvironment):
         render_mode: Optional[str] = None,
         heuristic_prey: bool = True,
         obs_mask: str = "none",
+        disable_comm: bool = False,
     ) -> None:
         self.scenario = scenario
         self.n_agents = n_agents
@@ -43,6 +44,12 @@ class MPEWrapper(MultiAgentEnvironment):
         self.render_mode = render_mode
         self.heuristic_prey = heuristic_prey
         self.obs_mask = obs_mask
+        # Cooperative Pantomime: zero every agent's communication action so the
+        # only channel left is movement/position (agents must infer each other's
+        # hidden targets from behaviour). Continuous MPE actions are
+        # [movement(5), comm(dim_c)], so comm occupies indices >= 5.
+        self.disable_comm = disable_comm
+        self._move_action_dim = 5
 
         self.env = self._build_env()
         self._all_agents = list(self.env.possible_agents)
@@ -156,10 +163,25 @@ class MPEWrapper(MultiAgentEnvironment):
                 render_mode=self.render_mode,
             )
 
-        raise ValueError(
-            "Unsupported scenario '{}'. Use 'simple_spread' or 'simple_tag'.".format(
-                self.scenario
+        if self.scenario == "simple_reference":
+            from pettingzoo.mpe import simple_reference_v3
+
+            # Cooperative Pantomime base: 2 agents, 3 landmarks. Each agent sees
+            # the OTHER agent's target colour but not its own, so it must infer
+            # its goal from the partner's behaviour. With ``disable_comm`` the
+            # explicit message channel is removed (paper's Pantomime variant);
+            # without it this is the Cooperative Communication / reference task.
+            # n_agents is fixed at 2 by the env.
+            return simple_reference_v3.parallel_env(
+                local_ratio=0.5,
+                max_cycles=self.max_cycles,
+                continuous_actions=True,
+                render_mode=self.render_mode,
             )
+
+        raise ValueError(
+            "Unsupported scenario '{}'. Use 'simple_spread', 'simple_tag' or "
+            "'simple_reference'.".format(self.scenario)
         )
 
     def reset(self, seed: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -197,7 +219,14 @@ class MPEWrapper(MultiAgentEnvironment):
 
             # Affine map from [-1,1] to [low, high], then clip for safety.
             scaled = 0.5 * (raw_action + 1.0) * (high - low) + low
-            action_dict[agent] = np.clip(scaled, low, high)
+            scaled = np.clip(scaled, low, high)
+
+            # Cooperative Pantomime: silence the communication channel so no
+            # explicit messages are sent (indices >= movement dim).
+            if self.disable_comm and scaled.shape[0] > self._move_action_dim:
+                scaled[self._move_action_dim:] = low[self._move_action_dim:]
+
+            action_dict[agent] = scaled
 
         # Scripted agents (e.g. prey): heuristic action already in env range.
         for agent in self.scripted_agents:

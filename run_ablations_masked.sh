@@ -22,8 +22,13 @@
 
 set -euo pipefail
 
-PYTHON="/home/ahmetysnocak/miniconda3/envs/mas_env/bin/python"
-MAX_JOBS=3
+# Pin per-process math threads so many parallel single-thread env loops pack
+# cleanly onto the available cores instead of oversubscribing them.
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
+PYTHON="${PYTHON:-$(command -v python)}"
+MAX_JOBS=9
 MAX_STEPS=1000000
 N_AGENTS=6
 OBS_MASK=others
@@ -62,6 +67,7 @@ _launch() {
         --scenario     "$scenario" \
         --n_agents     "$N_AGENTS" \
         --obs_mask     "$OBS_MASK" \
+        --device       cpu \
         --max_steps    "$MAX_STEPS" \
         --seed         "$seed" \
         --cb_variant   "$variant" \

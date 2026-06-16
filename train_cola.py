@@ -55,8 +55,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train COLA + MADDPG on MPE.")
 
     # Environment
-    parser.add_argument("--scenario", type=str, default="simple_spread", choices=["simple_spread", "simple_tag"])
+    parser.add_argument("--scenario", type=str, default="simple_spread", choices=["simple_spread", "simple_tag", "simple_reference"])
     parser.add_argument("--n_agents", type=int, default=3)
+    parser.add_argument(
+        "--disable_comm",
+        action="store_true",
+        help="Cooperative Pantomime: silence the communication channel in "
+        "simple_reference so agents must infer hidden targets from behaviour.",
+    )
     parser.add_argument(
         "--obs_mask",
         type=str,
@@ -240,6 +246,7 @@ def main() -> None:
         max_cycles=args.max_cycles,
         device=device,
         obs_mask=args.obs_mask,
+        disable_comm=args.disable_comm,
     )
 
     if args.use_history_path:
