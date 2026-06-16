@@ -40,6 +40,10 @@ class ObservationWindowManager(object):
         for _ in range(self.n_agents):
             buffers.append(deque([zero.copy() for _ in range(self.window)], maxlen=self.window))
         self._buffers = buffers
+        # First push after reset warm-starts the window by repeating the first
+        # observation instead of leaving zero-padding, so the temporal encoder
+        # never sees spurious all-zero frames at episode starts.
+        self._initialized = False
 
     def push(self, obs) -> None:
         """Append one timestep observation.
@@ -59,7 +63,14 @@ class ObservationWindowManager(object):
             )
 
         for agent_idx in range(self.n_agents):
-            self._buffers[agent_idx].append(obs_np[agent_idx].copy())
+            ob = obs_np[agent_idx].copy()
+            if not self._initialized:
+                self._buffers[agent_idx].clear()
+                for _ in range(self.window):
+                    self._buffers[agent_idx].append(ob.copy())
+            else:
+                self._buffers[agent_idx].append(ob)
+        self._initialized = True
 
     def get(self) -> torch.Tensor:
         stacked = np.stack(

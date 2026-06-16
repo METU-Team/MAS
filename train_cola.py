@@ -67,9 +67,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--obs_mask",
         type=str,
         default="none",
-        choices=["none", "others", "comm", "others_comm"],
+        choices=["none", "others", "comm", "others_comm", "velocity"],
         help="Partial-observability mask for simple_spread: hide other-agent "
-        "relative positions and/or the communication channel.",
+        "relative positions, the communication channel, or self-velocity "
+        "(velocity is recoverable from an obs sequence -> POMDP testbed for history).",
     )
     parser.add_argument("--max_cycles", type=int, default=100)
 

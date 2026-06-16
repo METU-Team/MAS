@@ -131,10 +131,16 @@ class MPEWrapper(MultiAgentEnvironment):
             keep[comm_start:comm_end] = 0.0
         elif self.obs_mask == "others_comm":
             keep[others_start:comm_end] = 0.0
+        elif self.obs_mask == "velocity":
+            # Hide self-velocity (indices 0:2). Velocity = position deltas, so it
+            # is RECOVERABLE from an observation *sequence* but not from a single
+            # frame -> turns the Markov task into a POMDP where a history encoder
+            # has something real to integrate (the right testbed for history).
+            keep[0:2] = 0.0
         else:
             raise ValueError(
                 "Unknown obs_mask '{}'. Use one of: none, others, comm, "
-                "others_comm.".format(self.obs_mask)
+                "others_comm, velocity.".format(self.obs_mask)
             )
         return keep
 
