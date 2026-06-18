@@ -85,6 +85,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Evaluation
     parser.add_argument("--eval_episodes", type=int, default=20)
+    parser.add_argument("--eval_interval", type=int, default=20_000,
+                        help="Env steps between periodic greedy evals (0 disables; "
+                        "matches the MADDPG/history paths for cross-paradigm plots).")
 
     # Logging / WandB
     parser.add_argument("--use_wandb", action="store_true")
@@ -219,6 +222,8 @@ def main() -> None:
         n_rollout_steps=args.n_rollout_steps,
         log_interval=args.log_interval,
         reward_window=args.reward_window,
+        eval_interval=args.eval_interval,
+        eval_episodes=args.eval_episodes,
     )
 
     run_config = vars(args).copy()
@@ -235,6 +240,28 @@ def main() -> None:
             wandb_record = {"train/" + k: v for k, v in record.items() if k != "step"}
             wandb_logger.log_metrics(wandb_record, step=step)
 
+    evaluator = MAPPOPolicyEvaluator(
+        env=env,
+        consensus_builder=consensus_builder,
+        embedding_layer=embedding_layer,
+        actors=actors,
+    )
+
+    def _on_eval(record: dict, step: int) -> None:
+        print(
+            "[eval ] step={:>8d}  eval_return={:>8.3f}  distinct={:>4.1f}"
+            "  entropy={:>5.3f}".format(
+                step,
+                float(record.get("eval_episode_return", record.get("mean_episode_return", 0.0))),
+                float(record.get("eval_distinct_classes", 0.0)),
+                float(record.get("eval_consensus_entropy", 0.0)),
+            )
+        )
+        if wandb_logger is not None:
+            wandb_logger.log_metrics(
+                {"eval/" + k: v for k, v in record.items()}, step=int(step)
+            )
+
     training_loop = MAPPOTrainingLoop(
         env=env,
         rollout_buffer=rollout_buffer,
@@ -245,16 +272,13 @@ def main() -> None:
         updater=updater,
         config=loop_config,
         on_log=_on_log,
+        evaluator=evaluator,
+        on_eval=_on_eval,
     )
 
     train_result = training_loop.run()
 
-    evaluator = MAPPOPolicyEvaluator(
-        env=env,
-        consensus_builder=consensus_builder,
-        embedding_layer=embedding_layer,
-        actors=actors,
-    )
+    # Final summary eval (reuses the same evaluator instance built above).
     eval_metrics = evaluator.evaluate(n_episodes=args.eval_episodes)
 
     if wandb_logger is not None:
