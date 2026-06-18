@@ -23,6 +23,8 @@ class QMIXTrainingConfig:
     eps_decay_steps: int = 500_000    # linear annealing over this many steps
     log_interval: int = 10_000
     reward_window: int = 100          # number of recent *episodes* to average
+    eval_interval: int = 0            # >0 enables periodic greedy eval (env steps)
+    eval_episodes: int = 20           # episodes per periodic eval
 
 
 class QMIXTrainingLoop(TrainingLoopModule):
@@ -52,6 +54,8 @@ class QMIXTrainingLoop(TrainingLoopModule):
         config: QMIXTrainingConfig,
         on_log: Optional[Callable[[Dict[str, object]], None]] = None,
         metrics_logger=None,
+        evaluator=None,
+        on_eval: Optional[Callable[[Dict[str, object], int], None]] = None,
     ) -> None:
         self.env = env
         self.replay_buffer = replay_buffer
@@ -62,6 +66,8 @@ class QMIXTrainingLoop(TrainingLoopModule):
         self.config = config
         self.on_log = on_log
         self.metrics_logger = metrics_logger
+        self.evaluator = evaluator
+        self.on_eval = on_eval
 
         if len(self.q_networks) != self.env.n_agents:
             raise ValueError("Number of q_networks must match env.n_agents.")
@@ -91,6 +97,7 @@ class QMIXTrainingLoop(TrainingLoopModule):
         train_steps = 0
         logs: List[Dict] = []
         last_update_metrics: Optional[Dict] = None
+        next_eval_at = self.config.eval_interval
 
         episode_returns: List[float] = []
         episode_lengths: List[int] = []
@@ -162,6 +169,29 @@ class QMIXTrainingLoop(TrainingLoopModule):
                     self.on_log(record)
                 if self.metrics_logger is not None:
                     self.metrics_logger.log_metrics(record, step=step)
+
+                # ── Periodic greedy eval (learning curve + collapse metrics) ──
+                # Mirrors the MADDPG / MAPPO / history-aware paths so
+                # eval_episode_return, eval_distinct_classes and
+                # eval_consensus_entropy are logged as curves rather than a single
+                # end-of-training number.
+                if (
+                    self.evaluator is not None
+                    and self.config.eval_interval > 0
+                    and step >= next_eval_at
+                ):
+                    eval_record = self.evaluator.evaluate(self.config.eval_episodes)
+                    if self.on_eval is not None:
+                        self.on_eval(eval_record, step)
+                    if self.metrics_logger is not None:
+                        self.metrics_logger.log_metrics(
+                            {"eval/" + k: v for k, v in eval_record.items()}, step=step
+                        )
+                    next_eval_at += self.config.eval_interval
+                    # Eval consumed the shared env; restart a clean episode.
+                    obs, state = self.env.reset()
+                    _ep_reward = 0.0
+                    _ep_length = 0
 
         result = {
             "total_steps": step,
