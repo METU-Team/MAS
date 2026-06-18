@@ -46,9 +46,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread",
-                        choices=["simple_spread", "simple_tag"])
+                        choices=["simple_spread", "simple_tag", "simple_reference"])
     parser.add_argument("--n_agents", type=int, default=3)
     parser.add_argument("--max_cycles", type=int, default=100)
+    parser.add_argument(
+        "--disable_comm",
+        action="store_true",
+        help="Cooperative Pantomime: silence the communication channel in "
+        "simple_reference so agents must infer hidden targets from behaviour.",
+    )
+    parser.add_argument(
+        "--obs_mask",
+        type=str,
+        default="none",
+        choices=["none", "others", "comm", "others_comm", "velocity"],
+        help="Partial-observability mask for simple_spread (see MPEWrapper).",
+    )
 
     # Core model
     parser.add_argument("--k", type=int, default=4)
@@ -151,6 +164,8 @@ def main() -> None:
         scenario=args.scenario,
         n_agents=args.n_agents,
         max_cycles=args.max_cycles,
+        obs_mask=args.obs_mask,
+        disable_comm=args.disable_comm,
         device=device,
     )
 
