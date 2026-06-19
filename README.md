@@ -1,6 +1,6 @@
 # COLA MARL Project
 
-This project implements a modular COLA (Consensus Learning) framework on top of MADDPG for cooperative multi-agent reinforcement learning.
+This project implements a modular COLA (Consensus Learning) framework for cooperative multi-agent reinforcement learning, integrated into three CTDE paradigms: MADDPG (off-policy), MAPPO (on-policy), and QMIX (value decomposition).
 
 The codebase is designed so each major part of the training system lives in a separate module. This makes it easier to replace components, test them independently, and build additional tooling such as model watchers and video pipelines.
 
@@ -17,6 +17,10 @@ Current capabilities:
 - Per-agent actor module.
 - Centralized critic module.
 - MADDPG update logic with COLA integration.
+- MAPPO (on-policy) and QMIX (value-decomposition) trainers using the same consensus builder.
+- History-aware consensus builder with identity / GRU / transformer encoders.
+- Partial-observability controls: observation masking and communication suppression (Cooperative Pantomime).
+- Label control variants for ablation (`cola` / `shuffled` / `no_cola`).
 - Full training loop orchestrator.
 - Evaluation loop for trained policies.
 - WandB logger integration using API key file.
@@ -29,8 +33,9 @@ Current capabilities:
 
 Key files and folders:
 
-- Main training entrypoint: [train_cola.py](train_cola.py)
-- Main watcher entrypoint: [watch_cola.py](watch_cola.py)
+- Training entrypoints: [train_cola.py](train_cola.py) (MADDPG), [train_mappo.py](train_mappo.py) (MAPPO), [train_qmix.py](train_qmix.py) (QMIX)
+- Watcher entrypoints: [watch_cola.py](watch_cola.py), [watch_mappo.py](watch_mappo.py), [watch_qmix.py](watch_qmix.py)
+- Experiment scripts: `run_*.sh` (see *Reproducing the Experiments* below)
 - Framework package root: [src/cola_framework](src/cola_framework)
 - Unit and gate tests: [tests](tests)
 - Saved model artifacts: [models](models)
@@ -145,6 +150,41 @@ Useful training options:
 - Device: `--device auto|cpu|cuda`
 - WandB: `--use_wandb --wandb_project --wandb_run_name --wandb_entity`
 - Output base path: `--save_model_path models/final_cola_model.pth`
+
+## Other Paradigms: MAPPO and QMIX
+
+The same consensus builder is integrated into two more CTDE algorithms. They share the core flags (`--scenario`, `--n_agents`, `--max_steps`, `--seed`, `--use_wandb`). Add `--no_cola` to run the vanilla baseline without the consensus signal.
+
+On-policy MAPPO:
+
+```bash
+PYTHONPATH=src python train_mappo.py \
+  --scenario simple_spread \
+  --n_agents 6 \
+  --max_steps 1600000
+```
+
+Value-decomposition QMIX (discretised actions):
+
+```bash
+PYTHONPATH=src python train_qmix.py \
+  --scenario simple_spread \
+  --n_agents 6 \
+  --max_steps 1000000
+```
+
+## Reproducing the Experiments
+
+The shell scripts launch the exact configurations used in the report; seeds, masking, communication suppression, and history encoders are all set inside each script. Run them from the project root, e.g. `bash run_mappo_experiments.sh`.
+
+- `run_experiments.sh` — main comparison runs across all three paradigms.
+- `run_mappo_experiments.sh` — COLA-MAPPO vs vanilla.
+- `run_qmix_experiments.sh` — COLA-QMIX vs vanilla.
+- `run_history_experiments.sh` — history-aware consensus encoders (identity / GRU / transformer).
+- `run_ablations_parallel.sh` — label control ablation (`cola` / `shuffled` / `no_cola`) on 6-agent `simple_spread`.
+- `run_ablations_masked.sh` — control ablation under observation masking.
+- `run_ablations_pantomime.sh` — control ablation on the communication-denied Cooperative Pantomime.
+- `run_mappo_pantomime.sh` — Cooperative Pantomime on MAPPO.
 
 ## Saved Artifacts
 
